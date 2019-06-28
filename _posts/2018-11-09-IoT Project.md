@@ -1,9 +1,9 @@
 # NFC 모듈을 이용한 영상 재생
 
-> Title : NFC 및 Processing을 이용한 사진 및 영상 재생
-> Date : 2018. 11. 01 ~ 2018. 11. 09
-> Problem : 영상이 끝난는지 판별하는 방법
-> Solution : 영상이 끝나면 Serial로 STOP라는 문자열을 보낸다.
+> Title : NFC 및 Processing을 이용한 사진 및 영상 재생  
+> Date : 2018. 11. 01 ~ 2018. 11. 09  
+> Problem : 영상이 끝난는지 판별하는 방법  
+> Solution : 영상이 끝나면 Serial로 STOP라는 문자열을 보낸다.  
 
 ### Arduino Code
 ```c
