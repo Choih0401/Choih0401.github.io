@@ -17,7 +17,7 @@ titles:
   ko-KR   : *KO
 key: page-about
 ---
-![enter image description here](https://lh3.googleusercontent.com/6SWKZEqDQqJ9itVnBmRx4c5DKnvBYNPx9WLEhvI0RLDeuf18QpV28ABIisJf77m8DWwiple0BhtI)
+![enter image description here](https://scontent-ssn1-1.xx.fbcdn.net/v/t1.0-9/49186161_2152574798328525_6408444771634774016_o.jpg?_nc_cat=102&_nc_sid=09cbfe&_nc_ohc=I0ZjopO0zOYAX9I8Ym0&_nc_ht=scontent-ssn1-1.xx&oh=adf3ff3963ce9db5036e1c1e804de1d6&oe=5EFFB8E8)
 ## 최현우
 ## Nickname
 * Choih0401 (최ㅎ0401)
