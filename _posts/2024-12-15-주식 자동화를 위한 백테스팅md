@@ -1,0 +1,347 @@
+# [2024] 주식 자동화를 위한 백테스팅
+
+유진투자증권 Champion Open API를 이용해 주식 자동화 프로그래을 개발하기 전 과거 투자시 변화의 정도를 대략적으로 확인하기 위한 백테스팅입니다
+TQQQ와 SCHD를 분기별, RSI 기준으로 리벨런싱 하는 방식으로 10000달러로 시작해 최종 수익금, 수익률, 최대 낙폭을 계산해서 출력합니다
+
+### 테스트 진행을 위한 yfinance, ta 모듈 설치
+
+- 테스트를 하기 위해서 야후 파이낸스의 데이터를 불러올 수 있는 yfinance 모듈과 rsi 값을 불러오기 위한 ta 모듈이 필요합니다
+
+
+```python
+!pip install yfinance
+```
+
+
+
+```python
+!pip install ta
+```
+
+
+### 데이터 다운로드
+
+- 테스트시 사용할 데이터를 다운로드 합니다
+- TQQQ와 SCHD를 이용해 테스트를 하기 때문에 2015년 1월부터 2023년 12월 08일까지의 주가 데이터와 배당금 데이터를 다운로드 해줍니다
+
+
+```python
+import yfinance as yf
+import ta.momentum as momentum
+
+# Load the stock data
+tqqq_data = yf.download("TQQQ", start="2015-01-01", end="2023-12-08")
+schd_data = yf.download("SCHD", start="2015-01-01", end="2023-12-08")
+
+# Load dividend data
+tqqq_dividends = yf.download("TQQQ", start="2015-01-01", end="2023-12-08", actions=True)["Dividends"]
+schd_dividends = yf.download("SCHD", start="2015-01-01", end="2023-12-08", actions=True)["Dividends"]
+```
+
+    [*********************100%%**********************]  1 of 1 completed
+    [*********************100%%**********************]  1 of 1 completed
+    [*********************100%%**********************]  1 of 1 completed
+    [*********************100%%**********************]  1 of 1 completed
+
+
+### RSI 계산
+
+- 기존에 받은 주가 데이터와 배당금 데이터를 하나의 변수에 합쳐줍니다
+- 기존에 받아둔 ta 모듈의 momentum을 이용해 14일 rsi 지표와 120일 rsi 지표를 계산해서 추가해줍니다
+
+
+```python
+# Merge dividend data with stock data
+tqqq_data = tqqq_data.merge(tqqq_dividends, how="left", left_index=True, right_index=True)
+schd_data = schd_data.merge(schd_dividends, how="left", left_index=True, right_index=True)
+
+# Calculate RSI for each date
+tqqq_data['RSI_14'] = momentum.RSIIndicator(tqqq_data['Close'], window=14).rsi()
+tqqq_data['RSI_120'] = momentum.RSIIndicator(tqqq_data['Close'], window=120).rsi()
+
+schd_data['RSI_14'] = momentum.RSIIndicator(schd_data['Close'], window=14).rsi()
+schd_data['RSI_120'] = momentum.RSIIndicator(schd_data['Close'], window=120).rsi()
+
+# Calculate 120-day Rate of Change (ROC)
+tqqq_data['ROC'] = (tqqq_data['Close'] - tqqq_data['Close'].shift(120)) / tqqq_data['Close'].shift(120) * 100
+```
+
+### 계산 전 기본 값들 세팅
+
+- initial_investment : 초기 자본을 의미합니다 (테스트 시 10000 달러로 진행하였습니다)
+- tqqq와 schd를 첫날 종가 기준 50:50으로 분배합니다 (소수점 거래는 불가능하다고 가정 후 치환시켰습니다)
+- 분기별 데이터, 출력 값들, 각 주식의 현금가 등을 저장해둘 변수를 선언합니다
+
+
+```python
+# Define initial investment amount
+initial_investment = 10000
+
+# Calculate the number of shares of TQQQ and SCHD
+tqqq_shares = int(initial_investment * 0.5 / tqqq_data['Close'].iloc[0])
+schd_shares = int(initial_investment * 0.5 / schd_data['Close'].iloc[0])
+
+# Output the results every quarter
+quarterly_data = tqqq_data.resample('QE').last()
+overall_rate_of_year = 0
+year_investment = initial_investment
+mdd = 0
+max_mdd = 0
+overall_value = 0
+overall_graph = {'date': [], 'overall': [], 'tqqq': [], 'schd': []}
+value_graph = {'date': [], 'tqqq': [], 'schd': [], 'tqqqValue': [], 'schdValue': []}
+overall_rate_of_return = 0
+tqqq_cash = 0
+schd_cash = 0
+```
+
+### 연도별 mdd 계산
+
+- 연도별 mdd 계산을 하기 위해 last_day_of_year 변수에 마지막 날을 저장합니다.
+
+
+```python
+# Find last day of year
+last_day_of_year = {}
+for index, row in tqqq_data.iterrows():
+    year = index.year
+    last_day_of_year[year] = index.day
+```
+
+### 분기 및 rsi 기준으로 리벨런싱 및 저장
+
+- 매일 종가를 기준으로 rsi 14일 지표가 30 미만이고 rsi 120 지표가 75 미만인 경우 tqqq로 기존의 3%를 schd에서 빼 추가 매수 합니다
+- 반대의 경우에는 schd의 3%를 tqqq에서 매도하여 추가 매수 합니다
+- 배당금이 있는 경우 현금에 배당금을 추가하고 남은 현금으로 주식을 매수 가능하다면 매수합니다
+- 시작 금액에서 발생한 낙폭과 연도별 발생한 낙폭을 계산하고 연도별 낙폭이 최대 낙폭 값보다 크다면 mdd 변수에 저장해줍니다
+- 분기별로 tqqq와 schd를 50:50으로 리벨런싱 합니다
+
+
+```python
+# Additional logic for buying and selling TQQQ and SCHD based on RSI
+for index, row in tqqq_data.iterrows():
+    if row['RSI_14'] < 30 and row['RSI_120'] < 75:
+        if schd_shares - int(tqqq_shares * row['Close'] * 0.03 / schd_data.loc[index]['Close']) > 0:
+            tqqq_shares += int(tqqq_shares * row['Close'] * 0.03 / row['Close'])
+            schd_shares -= int(tqqq_shares * row['Close'] * 0.03 / schd_data.loc[index]['Close'])
+    elif row['RSI_14'] > 80 and row['RSI_120'] > 120:
+        if tqqq_shares - int(tqqq_shares * row['Close'] * 0.03 / row['Close']) > 0:
+            tqqq_shares -= int(tqqq_shares * row['Close'] * 0.03 / row['Close'])
+            schd_shares += int(tqqq_shares * row['Close'] * 0.03 / schd_data.loc[index]['Close'])
+
+    # Check if it's a dividend date for TQQQ
+    if index in tqqq_data['Dividends'].dropna().index:
+        tqqq_cash += tqqq_shares * tqqq_data.loc[index]['Dividends']
+        tqqq_shares += int(tqqq_cash / row['Close'])
+        tqqq_cash -= row['Close'] * (int(tqqq_cash / row['Close']))
+
+    # Check if it's a dividend date for SCHD
+    if index in schd_data['Dividends'].dropna().index:
+        schd_cash += schd_shares * schd_data.loc[index]['Dividends']
+        schd_shares += int(schd_cash / schd_data.loc[index]['Close'])
+        schd_cash -= schd_data.loc[index]['Close'] * (int(schd_cash / schd_data.loc[index]['Close']))
+
+    # Calculate the value of TQQQ and SCHD at the end of each quarter
+    tqqq_value = tqqq_shares * row['Close']
+    schd_value = schd_shares * schd_data.loc[index]['Close']
+
+    # Calculate the overall value and rate of return for the quarter
+    overall_value = tqqq_value + schd_value
+    overall_rate_of_return = (overall_value - initial_investment) / initial_investment * 100
+    overall_rate_of_year = (overall_value - year_investment) / year_investment * 100
+
+    overall_graph['date'].append(str(index.year) + '-' + str(index.month) + '-' + str(index.day))
+    overall_graph['overall'].append(overall_value)
+    overall_graph['tqqq'].append(row['Close'])
+    overall_graph['schd'].append(schd_data.loc[index]['Close'])
+    value_graph['date'].append(str(index.year) + '-' + str(index.month) + '-' + str(index.day))
+    value_graph['tqqq'].append(100 / (overall_value / tqqq_value))
+    value_graph['schd'].append(100 / (overall_value / schd_value))
+    value_graph['tqqqValue'].append(tqqq_value)
+    value_graph['schdValue'].append(schd_value)
+    
+    if overall_rate_of_year < mdd:
+        mdd = overall_rate_of_year
+
+    # Rebalance the portfolio to 50:50
+    if index in quarterly_data.index:
+        tqqq_shares = int(overall_value * 0.5 / row['Close'])
+        schd_shares = int(overall_value * 0.5 / schd_data.loc[index]['Close'])
+
+        #print(f"Overall value for {index.date()}: {overall_value}$")
+        #print(f"Overall rate of return for {index.date()}: {overall_rate_of_return}%")
+        #print("")
+
+    # Calculate and print Maximum Drawdown (MDD) at the end of each year
+    if index.month == 12 and index.day == last_day_of_year[index.year]:
+        if max_mdd > mdd:
+            max_mdd = mdd
+
+        #print(f"MDD for {index.year}: {mdd}%")
+        #print("")
+        mdd = 0
+        year_investment = overall_value
+```
+
+### 결과 값 출력
+
+- 나온 결과 값을 출력합니다
+
+
+```python
+print(f"Result Overall value : {overall_value}$")
+print(f"Result Overall rate : {overall_rate_of_return}%")
+print(f"Result Minimal Overall rate : {max_mdd}%")
+```
+
+    Result Overall value : 65878.40008544922$
+    Result Overall rate : 558.7840008544922%
+    Result Minimal Overall rate : -53.34109981951217%
+
+
+### 결과 값그래프로 표현
+
+- matplotlib를 사용해 종가 기준으로 수익금 그래프를 그려봅니다
+
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+df = pd.DataFrame({
+    'date': overall_graph['date'],
+    'value': overall_graph['overall']
+})
+
+df['date'] = pd.to_datetime(df['date'])
+
+fig, ax = plt.subplots(figsize=(20, 10))
+ax.plot(df['date'], df['value'], marker='o', markersize=5)
+dateFmt = mdates.DateFormatter('%Y.%m.%d')
+ax.xaxis.set_major_formatter(dateFmt)
+plt.xticks(rotation=45)
+plt.grid()
+plt.show()
+```
+
+
+    
+![png](../assets/output_16_0.png)
+    
+
+
+### 방향성 비교를 위해 tqqq 값과 비교
+
+- 그래프의 방향성을 비교하기 위해 tqqq 값을 포함해 그래프를 그려봅니다
+
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+df = pd.DataFrame({
+    'date': overall_graph['date'],
+    'value': overall_graph['overall'],
+    'tqqq': overall_graph['tqqq'],
+})
+
+df['date'] = pd.to_datetime(df['date'])
+
+plt.figure(figsize=(20,10))
+plt.subplot(2, 1, 1)                # nrows=2, ncols=1, index=1
+plt.plot(df['date'], df['value'], marker='o', markersize=5)
+plt.title('1st Graph')
+plt.ylabel('Overall Graph')
+
+plt.subplot(2, 1, 2)                # nrows=2, ncols=1, index=2
+plt.plot(df['date'], df['tqqq'], 'r-', marker='o', markersize=5)
+plt.title('2nd Graph')
+plt.ylabel('TQQQ Graph')
+
+plt.tight_layout()
+plt.show()
+```
+
+
+    
+![png](../assets/output_18_0.png)
+    
+
+
+### tqqq와 schd 보유 비중
+
+- tqqq와 schd의 보유 비중을 확인하기 위해 그래프로 표현해봅니다
+
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+df = pd.DataFrame({
+    'date': value_graph['date'],
+    'tqqq': value_graph['tqqq'],
+    'schd': value_graph['schd'],
+})
+
+df['date'] = pd.to_datetime(df['date'])
+
+plt.figure(figsize=(20,10))
+plt.subplot(2, 1, 1)                # nrows=2, ncols=1, index=1
+plt.plot(df['date'], df['tqqq'], marker='o', markersize=5)
+plt.title('1st Graph')
+plt.ylabel('TQQQ Percent Graph')
+
+plt.subplot(2, 1, 2)                # nrows=2, ncols=1, index=2
+plt.plot(df['date'], df['schd'], 'r-', marker='o', markersize=5)
+plt.title('2nd Graph')
+plt.ylabel('SCHD Percent Graph')
+
+plt.tight_layout()
+plt.show()
+```
+
+
+    
+![png](../assets/output_20_0.png)
+    
+
+
+### 보유 중인 tqqq와 schd의 가격 비교
+
+- 보유하고 있는 tqqq와 schd의 가격을 비교하기 위한 그래프를 표현합니다
+
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+df = pd.DataFrame({
+    'date': value_graph['date'],
+    'tqqqValue': value_graph['tqqqValue'],
+    'schdValue': value_graph['schdValue'],
+})
+
+df['date'] = pd.to_datetime(df['date'])
+
+plt.figure(figsize=(20,10))
+plt.subplot(2, 1, 1)                # nrows=2, ncols=1, index=1
+plt.plot(df['date'], df['tqqqValue'], marker='o', markersize=5)
+plt.title('1st Graph')
+plt.ylabel('TQQQ Value Graph')
+
+plt.subplot(2, 1, 2)                # nrows=2, ncols=1, index=2
+plt.plot(df['date'], df['schdValue'], 'r-', marker='o', markersize=5)
+plt.title('2nd Graph')
+plt.ylabel('SCHD Value Graph')
+
+plt.tight_layout()
+plt.show()
+```
+
+
+    
+![png](../assets/output_22_0.png)
